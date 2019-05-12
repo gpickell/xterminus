@@ -8,6 +8,7 @@ const readline = require("readline");
 const os = require("os");
 const pty = require("node-pty");
 const fs = require("fs");
+const URL = require("url");
 
 const env = {};
 for (const key in process.env) {
@@ -30,7 +31,6 @@ function searchPaths(name) {
         for (const cand of candidates) {
             const fn = path.join(sysPath, cand);
             if (fs.existsSync(fn)) {
-                console.log(fn);
                 return fn;
             }
         }
@@ -44,12 +44,10 @@ const configPath1 = path.normalize(path.join(process.cwd(), ".xterminus.json"));
 const configPath2 = path.normalize(path.join(process.cwd(), `../.xterminus.${basename}.json`));
 function findConfig() {
     if (fs.existsSync(configPath1)) {
-        console.log(configPath1);
         return configPath1;
     }
 
     if (fs.existsSync(configPath2)) {
-        console.log(configPath2);
         return configPath2;
     }
 
@@ -101,17 +99,29 @@ console.log(sitePath);
 const server = http.createServer();
 server.on("request", app);
 
-function isLocal(origin) {
-    console.log(origin);
-    if (origin === "http://localhost") {
+function isLocal(request) {
+    // Check smae origin, this is sufficient if the network is protected.
+    const { host } = URL.parse(request.headers.origin);
+    if (request.headers.host !== host) {
+        return false;
+    }
+
+    const addr = request.socket.localAddress;
+    if (addr === "::1") {
         return true;
     }
 
-    if (origin.indexOf("http://localhost:") === 0) {
+    if (addr.indexOf("127.") === 0) {
         return true;
     }
 
-    if (origin.indexOf("http://172.") === 0) {
+    // Docker internal direct.
+    if (addr.indexOf("::ffff:172.") === 0) {
+        return true;
+    }
+    
+    // Docker internal direct.
+    if (addr.indexOf("172.") === 0) {
         return true;
     }
 
@@ -120,7 +130,7 @@ function isLocal(origin) {
 
 const ws = new WebSocketServer({ server });
 ws.on("connection", function (socket, request) {
-    if (!isLocal(request.headers.origin)) {
+    if (!isLocal(request)) {
         socket.terminate();
     }
 
