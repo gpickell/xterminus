@@ -10,6 +10,10 @@ const pty = require("node-pty");
 const fs = require("fs");
 const URL = require("url");
 
+if (os.platform() === "linux") {
+    process.env.SHELL = "/bin/bash";
+}
+
 const env = {};
 for (const key in process.env) {
     env[key.toLowerCase()] = process.env[key];
