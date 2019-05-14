@@ -103,6 +103,7 @@ console.log(sitePath);
 const server = http.createServer();
 server.on("request", app);
 
+const safeIpRange = /^(::ffff:)?172\.(1[6-9]|2[0-9]|3[01])\./;
 function isLocal(request) {
     // Check smae origin, this is sufficient if the network is protected.
     const { host } = URL.parse(request.headers.origin);
@@ -119,13 +120,7 @@ function isLocal(request) {
         return true;
     }
 
-    // Docker internal direct.
-    if (addr.indexOf("::ffff:172.") === 0) {
-        return true;
-    }
-    
-    // Docker internal direct.
-    if (addr.indexOf("172.") === 0) {
+    if (safeIpRange.test(addr)) {
         return true;
     }
 

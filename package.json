@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "build": "docker build -t gpickell/xterminus ."
+    "build:docker": "docker build -t gpickell/xterminus ."
   },
   "author": "",
   "license": "ISC",
