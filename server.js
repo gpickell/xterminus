@@ -9,6 +9,7 @@ const os = require("os");
 const pty = require("node-pty");
 const fs = require("fs");
 const URL = require("url");
+const minimatch = require("minimatch");
 
 if (os.platform() === "linux") {
     process.env.SHELL = "/bin/bash";
@@ -105,7 +106,6 @@ server.on("request", app);
 
 const safeIpRange = /^(::ffff:)?172\.(1[6-9]|2[0-9]|3[01])\./;
 function isLocal(request) {
-    // Check smae origin, this is sufficient if the network is protected.
     const { host } = URL.parse(request.headers.origin);
     if (request.headers.host !== host) {
         return false;
@@ -127,75 +127,155 @@ function isLocal(request) {
     return false;
 }
 
-const ws = new WebSocketServer({ server });
-ws.on("connection", function (socket, request) {
-    if (!isLocal(request)) {
-        socket.terminate();
+const watcher = fs.watch(process.cwd(), {
+    recursive: true,
+    encoding: "utf8"
+});
+
+let debounceTimer;
+let delayTimer;
+function debounceMaybe() {
+    delayTimer = undefined;
+
+    if (debounceTimer === undefined) {
+        watcher.emit("debounce");
+    }
+}
+
+function debounceProbably() {
+    debounceTimer = undefined;
+
+    if (delayTimer === undefined) {
+        watcher.emit("debounce");
+        delayTimer = setTimeout(debounceMaybe, 1000);
+    }
+}
+
+watcher.on("newListener", function (event, listener) {
+    if (event === "debounce") {
+        if (debounceTimer !== undefined) {
+            clearTimeout(debounceTimer);
+        }
+
+        this.off("debounce", listener);
+        debounceTimer = setTimeout(debounceProbably, 300);
+    }
+});
+
+function serve(socket, id) {
+    let p;
+    let rows;
+    let cols;
+    let globs;
+    function kill() {
+        const temp = p;
+        if (temp !== undefined) {
+            p = undefined;
+            temp.kill(os.platform() !== "win32" ? "SIGKILL" : undefined);
+        }
     }
 
-    let p;
-    const id = request.url.substr(1);
-    function launch(rows, cols) {
-        if (p === undefined) {
-            try {
-                const cmd = makeCommand(id);
-                console.log("Launch: %s %s %o", cols, rows, cmd);
+    function close() {
+        watcher.off("debounce", relaunch);
+        watcher.off("change", observe);
+        socket.removeAllListeners();
+        socket.close();
+    }
 
-                const fn = cmd.npm ? "npm" : cmd.spawn;
-                const args = cmd.npm ? ["run", cmd.npm] : cmd.args;
-                p = pty.spawn(searchPaths(fn), args, {
-                    name: "xterm-color",
-                    rows,
-                    cols,
-                    env: process.env,
-                    cwd: cmd.cwd
-                });
+    function launch() {
+        const cmd = makeCommand(id);
+        console.log("Launch: %s %s %o", cols, rows, cmd);
 
-                const info = args.join(" ");
-                socket.send(`\x1b]0;${cmd.title}\x1b\\`);
-                socket.send(`\x1b[1m\x1b[37mXTerminus: ${fn} ${info}\x1b[0m\r\n\r\n`);
+        const fn = cmd.npm ? "npm" : cmd.spawn;
+        const args = cmd.npm ? ["run", cmd.npm] : cmd.args;
+        p = pty.spawn(searchPaths(fn), args, {
+            name: "xterm-color",
+            rows,
+            cols,
+            env: process.env,
+            cwd: cmd.cwd
+        });
 
-                p.on("data", function (data) {
-                    if (socket !== undefined) {
-                        socket.send(data);
-                    }
-                });
+        const info = args.join(" ");
+        socket.send(`\x1b]0;${cmd.title}\x1b\\`);
+        socket.send(`\x1b[1m\x1b[37mXTerminus: ${fn} ${info}\x1b[0m\r\n\r\n`);
 
-                p.on("exit", function () {
-                    p = undefined;
-
-                    if (socket !== undefined) {
-                        socket.close();
-                    }
-                });
-            } catch (ex) {
-                console.log("Launch Error: %o", ex);
-                socket.send("Launch Error: " + ex);
-                socket.close();
+        const me = p;
+        p.on("data", function (data) {
+            if (p === me) {
+                socket.send(data);
             }
-        } else {
-            p.resize(cols, rows);
+        });
+
+        p.on("exit", function () {
+            if (p === me) {
+                close();
+            }
+        });
+
+        globs = cmd.watch;
+        if (typeof globs === "string") {
+            globs = [globs];
+        }
+
+        if (!Array.isArray(globs)) {
+            globs = [];
+        }
+
+        watcher.on("change", observe);
+    }
+
+    function trylaunch() {
+        try {
+            launch();
+        } catch (ex) {
+            console.log("Launch Error: %o", ex);
+            socket.send("Launch Error: " + ex);
+            close();
+        }
+    }
+
+    function relaunch() {
+        socket.send(`\x1b[1m\x1b[32m\r\n=== Restart ===\x1b[0m\r\n`);
+        kill();
+        trylaunch();
+    }
+
+    function observe(type, fn) {
+        if (fn && globs.some(x => minimatch(fn, x))) {
+            watcher.once("debounce", relaunch);
         }
     }
 
     socket.on("close", function () {
-        if (p !== undefined) {
-            p.kill(os.platform() !== "win32" ? "SIGKILL" : undefined);
-            p = undefined;
-        }
+        kill();
+        close();
     });
 
     const init = /^\x1b\[0n\x1b\[8;(\d+);(\d+)t$/;
     socket.on("message", function (data) {
         const match = data.match(init);
         if (match !== null) {
-            const rows = Number(match[1]);
-            const cols = Number(match[2]);
-            launch(rows, cols);
+            rows = Number(match[1]);
+            cols = Number(match[2]);
+            if (p === undefined) {
+                trylaunch();
+            } else {
+                p.resize(cols, rows);
+            }
         } else if (p !== undefined) {
             p.write(data);
         }
     });
+}
+
+const ws = new WebSocketServer({ server });
+ws.on("connection", function (socket, request) {
+    if (isLocal(request)) {
+        serve(socket, request.url.substr(1));
+    } else {
+        socket.terminate();
+    }
 });
 
 const port = Number(env.xterminus_port || 13080);
