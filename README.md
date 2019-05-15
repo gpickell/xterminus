@@ -15,8 +15,11 @@ OR
 ` ../.xterminus.thisdir.json`
 ### Site Directory
 ` ./.site`
+### Environment Variables
+`XTERMINUS_PORT=13080`
 ### Configuration Schema
 ```
+{
     "shell": {
         "title": "Shell"
     },
